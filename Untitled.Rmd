@@ -1,0 +1,294 @@
+---
+title: "Data quality checks"
+author: "Januar Harianto"
+date: Last updated on `r format(Sys.time(), "%A, %d %b %Y")`
+output:
+  html_document:
+    code_download: true # embed .Rmd file
+    toc: true  # table of contents
+    toc_depth: 3
+    toc_float: true # toc is always visible when scrolled
+    number_sections: true 
+    df_print: paged # format data frame outputs automatically
+    theme: sandstone # theme the doc
+    highlight: tango # theme syntax colouring
+---
+```{css newstyles, echo=FALSE}
+body {
+  color: black;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+h1, .h1, h2, .h2, h3, .h3 { /* Add space before headings: */
+    margin-top: 56px;
+}
+h1, h2 { /* add border to h1 and h2 */
+  border-bottom: solid 1px #666;
+}
+h2 { /* Resize header 2: */
+  font-size: 22px;
+}
+h3 { /* Resize header 3: */
+  font-size: 16px;
+}
+a { /* Link colours */
+  color: blue;
+}
+.tocify { /* Some toc fixes*/
+  width: 100% !important;
+  border: none; /* remove border */
+}
+.tocify-header { /* fix for horrible indent in toc */
+  text-indent: initial;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+  fig.path = "images/")
+```
+
+
+# Introduction
+This file analyses site data obtained from DPI for digital soil mapping. Overall, we want to generate a model that predicts electrical conductivity (ECe), a reliable measure of salinity for comparing between soil types as it accounts for soil texture.
+
+The aims are to
+
+- clean the dataset; then
+- identify and handle outliers; then
+- explore the data to visualise patterns and determine relationships; then
+- construct an appropriate classification model using covariates to predict soil electrical conductivity (ECe)
+
+
+```{r load, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(janitor)
+```
+
+# Data import and cleaning
+
+<!-- In this step we import the data and -->
+
+<!-- - clean variable names -->
+<!-- - classify variables as necessary -->
+<!-- - generate data objects for data quality analyses -->
+
+Data import: 
+
+```{r read, cache=TRUE}
+rawdf <- read_excel("data/OBS_APSO_compiled_USYD.XLSX")
+# glimpse(df)
+# length(na.omit(df$e_celt30)) #
+# length(na.omit(df$e_ce_anylt30)) #
+```
+
+The dataset contains 47 variables with approximately 86 k rows. 
+
+Remove unnecessary ID variables and clean variable names automatically using `janitor`:
+
+```{r import}
+# tidy up variable names so that they will be easier to call
+rawdf <- clean_names(rawdf) # we use janitor to do this automatically
+
+# List variable names so that they are easy to copy
+# names(rawdf)
+
+# remove unnecessary variables (maybe not necessary)
+df <- rawdf %>%
+  select(-c(apso, agency_code, proj_code, s_id, o_id, wasgqfr_desc))
+```
+
+# Data quality checks
+
+<!-- In this step we: -->
+
+<!-- - determine outliers in the data, and list them -->
+<!-- - identify data quality issues such as missing or suspect values -->
+<!-- - discuss the limitations of the data -->
+
+## Missing data
+
+To visualise the "missingness" of the data, we use the `naniar` package which allows us to summarise missing data with minimal effort. Here, we want to see if missing data (we know that they are there) will influence how the dataset can be analysed. 
+
+
+### Distribution
+
+In the plot below, each column is a variable and black bars represent missing values across the rows of the dataset. Think of it as a bird's eye view of the entire data matrix. 
+
+Because the dataset is huge, we "force" the function to compute the results using `warn_large_data = FALSE`, knowing that data processing might encounter out of memory issues on "weaker" computers. Luckily, this laptop was able to perform the calculation.
+
+```{r missingPlot, cache=TRUE}
+library(naniar)
+vis_miss(df, warn_large_data = FALSE)
+```
+
+The visualisation shows that some variables contain an overwhelmingly large amount of missing information.
+
+Notably, the variable `ESPL4w` -- Estimated ESP (Exchangeable Sodium percentage) of the subsurface (B) horizons from WA soil group only -- has **no data**. This should be checked with Dennis who provided the data. 
+
+### Frequency
+
+It might be useful to determine which variables contain the most missing data.
+
+```{r missingPropPlot, cache=TRUE}
+gg_miss_var(df, show_pct = TRUE) + 
+  theme_bw() 
+```
+
+18 variables have more than 50% missing data. They are probably difficult to fill and should not be used.
+
+
+### Common intersections
+
+We use an UpSet plot to visualise intersections between groups of variables. This allows us to determine patterns of "missingness" (if any) arranged by frequency.
+
+```{r upsetPlot, cache=TRUE}
+gg_miss_upset(df)
+```
+
+Intersection frequency is high among variables and indicates data collection issue rather than missing data at random.
+
+### Pattern check
+
+Are missing values biased towards certain sites? We can investigate this by visualising the number of missing values, categorised by a sensible factor. Here we choose the "broad 6 class soil grouping" variable.
+
+```{r missingFactorPlot, cache=TRUE}
+gg_miss_fct(df, w6class)
+```
+
+The results show no major issues. 
+
+- Variable `p_hw_anygt30max`, which represents the maximum pH (water) lab or field > 30cm (variable depth up to 2 metres) is of interest if used. Otherwise, most sample categories have similar sampling frequencies. 
+- There are many `NA` values for `w6class`.
+
+There may be other patterns that we can investigate once we are certain of the covariates used to construct our model(s). For now, we can conclude that some variables are unusable due to high % missing data, which can be viewed in the frequency plot above.
+
+## Outliers
+
+Time to check the dataset for outliers and fix any errors if necessary.
+
+### Numeric/ordinal variables
+
+First let's do basic boxplots. We plot eavery numeric variable and lay them out in a grid using `facet_wrap()`.
+
+```{r outlierBplot, cache=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
+# subset numeric data
+df_ol <- dplyr::select(df, where(is.numeric))
+
+library(reshape2)
+melt(df_ol) %>%
+  ggplot(aes(factor(variable), value)) +
+  facet_wrap(~ variable, scale="free") +
+  geom_boxplot(outlier.size = 0.2) +
+  theme_minimal()
+```
+
+Many issues with the data! One by one:
+
+1. **Latitude and Longitude `o_latitude_gda`, `o_longitude_gda`**: The coordinates `r min(df_ol$o_latitude_gda)`, `r min(df_ol$o_longitude_gda)` point to the open ocean, possibly human error.
+2. **Year data collected `year`**: We have year entries of `r min(df_ol$year, na.rm = TRUE)` and `r max(df_ol$year, na.rm = TRUE)`. Unless we opened a time capsule and time travelled, these dates are impossible and should be checked.
+3. **Land use ID `lu_sel`**: ID `r min(df_ol$lu_sel, na.rm = TRUE)` is incorrect. The value should vary between 1 and 5.
+4. **WA soil group qualifier `o_wa_soilgrp_code`**: no obvious issues, but cross-check with Dennis.
+5. **ECe `e_ce_l123wq`**: ECe of > 4000 and < 1000 exist. Are they realistic?
+6. **ECe `e_ce_l45wq`**: Lots of outliers -- need to check workable range. Same as above.
+7. **pH `p_hw_l123wq`**: Ha, pH value of `r min(df_ol$p_hw_l123wq, na.rm = TRUE)` is impossible.
+8. **pH `p_hw_l45wq`**: Same as #7.
+9. **ESP `esp_l1wq`**: ESP value of `r min(df_ol$esp_l1wq, na.rm = TRUE)` is also impossible.
+10. **ESP `esp_l4wq`**: same as #9.
+11. **ECe `e_ce_l123w`**: same as #5.
+12. **ECe `e_ce_l45w`**: # same as above and #5.
+13. **pH `p_hw_l123w`**: same as #7.
+14. **pH `p_hw_l45w`**: same as above and #7.
+15. **ESP `espl1w`**: Same as #9.
+16. **`soil_depth`**: looks ok, just looks skewed (but expected since larger depths are sampled less).
+17. **`confidence`**: arbitraty value, should be ok.
+18. **ECe `e_celt30`**: Unsure.
+19. **ECe `e_cegt30`**: Unsure.
+20. **ECe `e_ce_anylt30`**: Possible outlier on the upper limit.
+21. **ECe `e_ce_anygt30`**: Possible outlier on the upper limit.
+22. **ECe `e_ce_any_s_glt30`**: Possible outlier on the upper limit.
+23. **ECe `e_ce_any_s_ggt30`**: Possible outlier on the upper limit.
+24. **ESP `esp_anylt30`**: Possible outlier on the upper limit.
+25. **ESP `esp_anygt30`**: Unsure.
+26. **ESP `esp_any_s_glt30`**: Unsure.
+27. **ESP `esp_any_s_ggt30`**: Unsure.
+28. **pH `p_hw_anygt30max`**: Looks ok.
+29. **pH `p_hw_any_s_ggt30max`** Same as # 7, 14.
+
+
+### Non-numeric variables
+
+Do a quick check on character variables.
+
+```{r charCheck}
+df_cl <- dplyr::select(df, where(is.character))
+
+uniques <- lapply(1:ncol(df_cl), function(i) {
+  unique(df_cl[[i]])
+})
+names(uniques) <- names(df_cl)
+uniques
+
+```
+
+# Data cleaning
+
+## Remove outliers
+
+Let's assume that we won't be fixing the errors for now. 
+**For now, we will remove the most obvious outliers first.**
+As this step takes a bit of work, the code is hidden (but can be viewed from the .Rmd source). 
+
+```{r}
+# handle incorrect latitude value:
+df_ol$o_latitude_gda[which(df_ol$o_latitude_gda < -40)] <- NA
+# handle incorrect longitude value
+df_ol$o_longitude_gda[which(df_ol$o_longitude_gda < 80)] <- NA
+# make incorrect years NA
+df_ol$year[which(df_ol$year > 2020)] <- NA
+df_ol$year[which(df_ol$year < 1900)] <- NA
+# remove incorrect land use ID
+# should we repair?
+df_ol$lu_sel[which(df_ol$lu_sel < 0)] <- NA
+# remove crazy pH
+df_ol$p_hw_l123wq[which(df_ol$p_hw_l123wq < 0)] <- NA
+df_ol$p_hw_l45wq[which(df_ol$p_hw_l45wq < 0)] <- NA
+df_ol$p_hw_l123w[which(df_ol$p_hw_l123w < 0)] <- NA
+df_ol$p_hw_l45w[which(df_ol$p_hw_l45w < 0)] <- NA
+df_ol$p_hw_any_s_ggt30max[which(df_ol$p_hw_any_s_ggt30max < 0)] <- NA
+# remove crazy ESP
+# Wouldn't ESP > 100 be illogical?
+df_ol$esp_l1wq[which(df_ol$esp_l1wq < 0)] <- NA
+df_ol$esp_l4wq[which(df_ol$esp_l4wq < 0)] <- NA
+df_ol$espl1w[which(df_ol$espl1w < 0)] <- NA
+df_ol$esp_anylt30[which(df_ol$esp_anylt30 > 500)] <- NA
+df_ol$esp_any_s_glt30[which(df_ol$esp_any_s_glt30 < 0)] <- NA
+# remove crazy ECe
+df_ol$e_ce_anygt30[which(df_ol$e_ce_anygt30 > 30000)] <- NA
+df_ol$e_ce_any_s_glt30[which(df_ol$e_ce_any_s_glt30 > 30000)] <- NA
+df_ol$e_ce_any_s_glt30[which(df_ol$e_ce_any_s_glt30 < 0)] <- NA
+df_ol$e_ce_any_s_ggt30[which(df_ol$e_ce_any_s_ggt30 > 30000)] <- NA
+df_ol$e_ce_any_s_ggt30[which(df_ol$e_ce_any_s_ggt30 < 0)] <- NA
+```
+
+Check the boxplots again:
+
+```{r outlierBplot2, cache=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
+
+melt(df_ol) %>%
+  ggplot(aes(factor(variable), value)) +
+  facet_wrap(~ variable, scale="free") +
+  geom_boxplot(outlier.size = 0.2) +
+  theme_minimal()
+
+```
+
+
+# Reproducibility
+
+Session info, for future troubleshooting. 
+
+```{r session}
+sessionInfo()
+```
