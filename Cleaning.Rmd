@@ -61,6 +61,8 @@ The aims are to
 
 
 ```{r load, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+
 library(tidyverse)
 library(readxl)
 library(janitor)
@@ -76,8 +78,10 @@ library(janitor)
 
 Data import: 
 
-```{r read, cache=TRUE}
-rawdf <- read_excel("data/OBS_APSO_compiled_USYD.XLSX")
+```{r read}
+df <- read_excel("data/data_v2.xlsx") %>% 
+  janitor::clean_names() %>%
+  select(-c(1:9, 13:14))
 # glimpse(df)
 # length(na.omit(df$e_celt30)) #
 # length(na.omit(df$e_ce_anylt30)) #
@@ -89,14 +93,14 @@ Remove unnecessary ID variables and clean variable names automatically using `ja
 
 ```{r import}
 # tidy up variable names so that they will be easier to call
-rawdf <- clean_names(rawdf) # we use janitor to do this automatically
+# rawdf <- clean_names(rawdf) # we use janitor to do this automatically
 
 # List variable names so that they are easy to copy
 # names(rawdf)
 
 # remove unnecessary variables (maybe not necessary)
-df <- rawdf %>%
-  select(-c(apso, agency_code, proj_code, s_id, o_id, wasgqfr_desc))
+# df <- rawdf %>%
+  # select(-c(apso, agency_code, proj_code, s_id, o_id, wasgqfr_desc))
 ```
 
 # Data quality checks
@@ -118,7 +122,7 @@ In the plot below, each column is a variable and black bars represent missing va
 
 Because the dataset is huge, we "force" the function to compute the results using `warn_large_data = FALSE`, knowing that data processing might encounter out of memory issues on "weaker" computers. Luckily, this laptop was able to perform the calculation.
 
-```{r missingPlot, cache=TRUE}
+```{r missingPlot}
 library(naniar)
 vis_miss(df, warn_large_data = FALSE)
 ```
@@ -131,7 +135,7 @@ Notably, the variable `ESPL4w` -- Estimated ESP (Exchangeable Sodium percentage)
 
 It might be useful to determine which variables contain the most missing data.
 
-```{r missingPropPlot, cache=TRUE}
+```{r missingPropPlot}
 gg_miss_var(df, show_pct = TRUE) + 
   theme_bw() 
 ```
@@ -143,8 +147,8 @@ gg_miss_var(df, show_pct = TRUE) +
 
 We use an UpSet plot to visualise intersections between groups of variables. This allows us to determine patterns of "missingness" (if any) arranged by frequency.
 
-```{r upsetPlot, cache=TRUE}
-gg_miss_upset(df)
+```{r upsetPlot}
+gg_miss_upset(df, nsets = 10)
 ```
 
 Intersection frequency is high among variables and indicates data collection issue rather than missing data at random.
@@ -153,7 +157,7 @@ Intersection frequency is high among variables and indicates data collection iss
 
 Are missing values biased towards certain sites? We can investigate this by visualising the number of missing values, categorised by a sensible factor. Here we choose the "broad 6 class soil grouping" variable.
 
-```{r missingFactorPlot, cache=TRUE}
+```{r missingFactorPlot}
 gg_miss_fct(df, w6class)
 ```
 
@@ -172,7 +176,7 @@ Time to check the dataset for outliers and fix any errors if necessary.
 
 First let's do basic boxplots. We plot eavery numeric variable and lay them out in a grid using `facet_wrap()`.
 
-```{r outlierBplot, cache=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
+```{r outlierBplot, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
 # subset numeric data
 df_ol <- dplyr::select(df, where(is.numeric))
 
@@ -240,7 +244,7 @@ Let's assume that we won't be fixing the errors for now.
 **For now, we will remove the most obvious outliers first.**
 As this step takes a bit of work, the code is hidden (but can be viewed from the .Rmd source). 
 
-```{r}
+```{r, eval=FALSE}
 # handle incorrect latitude value:
 df_ol$o_latitude_gda[which(df_ol$o_latitude_gda < -40)] <- NA
 # handle incorrect longitude value
@@ -274,7 +278,7 @@ df_ol$e_ce_any_s_ggt30[which(df_ol$e_ce_any_s_ggt30 < 0)] <- NA
 
 Check the boxplots again:
 
-```{r outlierBplot2, cache=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
+```{r outlierBplot2, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
 
 melt(df_ol) %>%
   ggplot(aes(factor(variable), value)) +
